@@ -20,6 +20,7 @@ class LlmApiUrl:
     mistral: str = "https://api.mistral.ai/v1"
     openai: str = "https://api.openai.com/v1"
     anthropic: str = "https://api.anthropic.com/v1"
+    groq: str = "https://api.groq.com/openai/v1"
     header_keys: dict = field(
         default_factory=lambda: {
             "albert_prod": {"Authorization": "Bearer {ALBERT_API_KEY}"},
@@ -33,6 +34,7 @@ class LlmApiUrl:
                 "x-api-key": "{ANTHROPIC_API_KEY}",
                 "anthropic-version": "2023-06-01",
             },
+            "groq": {"Authorization": "Bearer {GROQ_API_KEY}"},
         }
     )
 
@@ -58,6 +60,7 @@ class LlmApiModels:
     mistral: set[str] = field(default_factory=set)
     openai: set[str] = field(default_factory=set)
     anthropic: set[str] = field(default_factory=set)
+    groq: set[str] = field(default_factory=set)
 
     @classmethod
     def _sync_openai_api_models(cls):
@@ -150,7 +153,6 @@ class LlmClient:
         if not url:
             raise ValueError(f"Model unknown: {model}")
         response = requests.post(url + path, headers=headers, json=json_data, stream=stream, timeout=300)
-        log_and_raise_for_status(response, "Albert API error")
 
         if stream:
             return self._get_streaming_response(response)

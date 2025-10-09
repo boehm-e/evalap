@@ -753,7 +753,9 @@ def display_structured_output_analysis(experimentset):
     
     # Collect data from all experiments
     table_data = []
+    all_field_names = set()
     
+    # First pass: collect all unique field names and data
     for experiment in experimentset.get("experiments", []):
         # Get model name
         if experiment.get("model"):
@@ -766,12 +768,10 @@ def display_structured_output_analysis(experimentset):
             if result.get("metric_name") == "llm_structured_output":
                 observation_table = result.get("observation_table", [])
                 
-                # Process each observation
-                total_score = 0
-                success_count = 0
-                failure_count = 0
-                perfect_matches = 0
-                extraction_errors = []
+                # Collect scores
+                global_scores = []
+                field_scores_by_name = defaultdict(list)
+                errors_count = 0
                 
                 for obs in observation_table:
                     if obs.get("observation"):
@@ -779,69 +779,161 @@ def display_structured_output_analysis(experimentset):
                             # Parse the JSON observation
                             obs_data = json.loads(obs["observation"])
                             
-                            # Count successes and failures
-                            score = obs.get("score", 0)
-                            if score == 1:
-                                success_count += 1
-                            else:
-                                failure_count += 1
+                            # Get global score from observation
+                            if "score" in obs_data:
+                                global_scores.append(obs_data["score"])
                             
-                            total_score += score
+                            # Get field scores
+                            field_scores = obs_data.get("field_scores", {})
                             
-                            # Check for perfect matches
-                            if obs_data.get("field_scores", {}).get("status") == "perfect_match":
-                                perfect_matches += 1
+                            # Skip status field if present
+                            for field_name, field_score in field_scores.items():
+                                if field_name != "status" and isinstance(field_score, (int, float)):
+                                    all_field_names.add(field_name)
+                                    field_scores_by_name[field_name].append(field_score)
                             
-                            # Collect errors
+                            # Count errors
                             if "error" in obs_data:
-                                extraction_errors.append(obs_data["error"])
+                                errors_count += 1
                                 
-                        except (json.JSONDecodeError, TypeError):
+                        except (json.JSONDecodeError, TypeError) as e:
                             # Handle parsing errors
-                            failure_count += 1
+                            errors_count += 1
                 
-                # Calculate statistics
-                total_observations = len(observation_table)
-                avg_score = total_score / total_observations if total_observations > 0 else 0
-                
-                # Add row to table
-                table_data.append({
+                # Calculate averages
+                row_data = {
                     "Model": model_name,
-                    "Experiment": experiment.get("name", "Unknown"),
-                    "Total Items": total_observations,
-                    "Success Rate": f"{(success_count/total_observations*100):.1f}%" if total_observations > 0 else "N/A",
-                    "Failure Rate": f"{(failure_count/total_observations*100):.1f}%" if total_observations > 0 else "N/A",
-                    "Average Score": f"{avg_score:.3f}",
-                    "Perfect Matches": perfect_matches,
-                    "Errors": len(extraction_errors),
-                })
+                    "Experiment": experiment.get("id", "Unknown"),
+                    "global_score": np.mean(global_scores) if global_scores else None,
+                    "errors": errors_count,
+                    "n_items": len(observation_table)
+                }
+                
+                # Add field scores
+                for field_name in field_scores_by_name:
+                    scores = field_scores_by_name[field_name]
+                    row_data[field_name] = np.mean(scores) if scores else None
+                
+                table_data.append(row_data)
     
     if table_data:
-        # Convert to DataFrame and display
+        # Convert to DataFrame
         df = pd.DataFrame(table_data)
         
-        # Sort by average score descending
-        df.sort_values(by="Average Score", ascending=False, inplace=True)
+        # Order columns: Model, Experiment, global_score, then sorted field scores, then metadata
+        sorted_field_names = sorted(all_field_names)
+        base_columns = ["Model", "Experiment", "global_score"]
+        metadata_columns = ["n_items", "errors"]
+        
+        # Ensure all field columns exist in the dataframe
+        for field in sorted_field_names:
+            if field not in df.columns:
+                df[field] = None
+        
+        column_order = base_columns + sorted_field_names + metadata_columns
+        column_order = [col for col in column_order if col in df.columns]
+        df = df[column_order]
+        
+        # Sort by global_score descending
+        df.sort_values(by="global_score", ascending=False, inplace=True)
+        
+        # Format the numeric columns
+        format_dict = {}
+        for col in ["global_score"] + sorted_field_names:
+            if col in df.columns:
+                format_dict[col] = "{:.3f}"
+        
+        # Create column config for display
+        column_config = {
+            "Model": st.column_config.TextColumn(width="medium"),
+            "Experiment": st.column_config.TextColumn(width="medium"),
+            "global_score": st.column_config.NumberColumn(
+                "Global Score",
+                help="Average global score across all items",
+                format="%.3f",
+                width="small"
+            ),
+            "n_items": st.column_config.NumberColumn(
+                "Items",
+                help="Number of items processed",
+                width="small"
+            ),
+            "errors": st.column_config.NumberColumn(
+                "Errors",
+                help="Number of extraction errors",
+                width="small"
+            ),
+        }
+        
+        # Add config for field columns
+        for field in sorted_field_names:
+            column_config[field] = st.column_config.NumberColumn(
+                field.capitalize(),
+                help=f"Average score for {field} extraction",
+                format="%.3f",
+                width="small"
+            )
+        
+        st.write("**Score Table** - Shows global scores and individual field scores for each model")
+        
+        # Apply highlighting to the dataframe
+        def highlight_scores(df):
+            # Create an empty DataFrame with the same shape as our original
+            highlight_df = pd.DataFrame("", index=df.index, columns=df.columns)
+            
+            # Define score columns (global_score and field scores)
+            score_columns = ["global_score"] + sorted_field_names
+            
+            for col in df.columns:
+                if col in score_columns:
+                    # Convert column to numeric, handling None/NaN values
+                    numeric_col = pd.to_numeric(df[col], errors='coerce')
+                    
+                    if numeric_col.notna().any():  # Only if there are valid numeric values
+                        max_val = numeric_col.max()
+                        min_val = numeric_col.min()
+                        
+                        # Highlight max in green, min in red
+                        for idx in df.index:
+                            val = numeric_col.loc[idx]
+                            if pd.notna(val):
+                                if val == max_val:
+                                    highlight_df.loc[idx, col] = "font-weight: bold; color: green"
+                                elif val == min_val:
+                                    highlight_df.loc[idx, col] = "font-weight: bold; color: red"
+            
+            return highlight_df
         
         st.dataframe(
-            df,
+            df.style.apply(highlight_scores, axis=None).format(format_dict, na_rep="N/A"),
             use_container_width=True,
             hide_index=True,
-            column_config={
-                "Model": st.column_config.TextColumn(width="medium"),
-                "Experiment": st.column_config.TextColumn(width="medium"),
-                "Total Items": st.column_config.NumberColumn(width="small"),
-                "Success Rate": st.column_config.TextColumn(width="small"),
-                "Failure Rate": st.column_config.TextColumn(width="small"),
-                "Average Score": st.column_config.TextColumn(width="small"),
-                "Perfect Matches": st.column_config.NumberColumn(width="small"),
-                "Errors": st.column_config.NumberColumn(width="small"),
-            }
+            column_config=column_config
         )
         
-        # Show detailed breakdown if any errors exist
-        if any(row["Errors"] > 0 for row in table_data):
-            with st.expander("Error Details", expanded=False):
+        # Show summary statistics
+        st.write("---")
+        st.write("**Field Performance Summary**")
+        
+        summary_data = []
+        for field in sorted_field_names:
+            field_values = df[field].dropna()
+            if len(field_values) > 0:
+                summary_data.append({
+                    "Field": field.capitalize(),
+                    "Mean Score": f"{field_values.mean():.3f}",
+                    "Min Score": f"{field_values.min():.3f}",
+                    "Max Score": f"{field_values.max():.3f}",
+                    "Std Dev": f"{field_values.std():.3f}" if len(field_values) > 1 else "N/A"
+                })
+        
+        if summary_data:
+            summary_df = pd.DataFrame(summary_data)
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        
+        # Show error details if any
+        if df["errors"].sum() > 0:
+            with st.expander(f"Error Details ({int(df['errors'].sum())} total errors)", expanded=False):
                 for experiment in experimentset.get("experiments", []):
                     model_name = experiment.get("model", {}).get("name", experiment.get("name", "Unknown"))
                     
@@ -858,10 +950,13 @@ def display_structured_output_analysis(experimentset):
                                                 "Error": obs_data["error"]
                                             })
                                     except:
-                                        pass
+                                        errors.append({
+                                            "Line": obs.get("num_line", "N/A"),
+                                            "Error": "Failed to parse JSON observation"
+                                        })
                             
                             if errors:
-                                st.write(f"**{model_name}**")
+                                st.write(f"**{experiment.get('name', 'Unknown')} ({model_name})**")
                                 error_df = pd.DataFrame(errors)
                                 st.dataframe(error_df, use_container_width=True, hide_index=True)
     else:
