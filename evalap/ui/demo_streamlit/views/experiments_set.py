@@ -834,105 +834,78 @@ def display_structured_output_analysis(experimentset):
         column_order = [col for col in column_order if col in df.columns]
         df = df[column_order]
         
-        # Sort by global_score descending
+        # Sort by global_score descending (before transpose)
         df.sort_values(by="global_score", ascending=False, inplace=True)
         
-        # Format the numeric columns
-        format_dict = {}
-        for col in ["global_score"] + sorted_field_names:
-            if col in df.columns:
-                format_dict[col] = "{:.3f}"
+        # Prepare for transpose: Remove Experiment column and use Model as identifier
+        # If multiple experiments per model, take the first one (or could aggregate)
+        df_for_transpose = df.drop(columns=["Experiment", "n_items", "errors"], errors='ignore')
         
-        # Create column config for display
-        column_config = {
-            "Model": st.column_config.TextColumn(width="medium"),
-            "Experiment": st.column_config.TextColumn(width="medium"),
-            "global_score": st.column_config.NumberColumn(
-                "Global Score",
-                help="Average global score across all items",
-                format="%.3f",
-                width="small"
-            ),
-            "n_items": st.column_config.NumberColumn(
-                "Items",
-                help="Number of items processed",
-                width="small"
-            ),
-            "errors": st.column_config.NumberColumn(
-                "Errors",
-                help="Number of extraction errors",
-                width="small"
-            ),
-        }
+        # Set Model as index for transpose
+        df_for_transpose = df_for_transpose.set_index("Model")
         
-        # Add config for field columns
-        for field in sorted_field_names:
-            column_config[field] = st.column_config.NumberColumn(
-                field.capitalize(),
-                help=f"Average score for {field} extraction",
-                format="%.3f",
-                width="small"
-            )
+        # Transpose: metrics become rows, models become columns
+        df_transposed = df_for_transpose.T
         
-        st.write("**Score Table** - Shows global scores and individual field scores for each model")
+        # Reset index name for display
+        df_transposed.index.name = "Metric"
         
-        # Apply highlighting to the dataframe
-        def highlight_scores(df):
-            # Create an empty DataFrame with the same shape as our original
-            highlight_df = pd.DataFrame("", index=df.index, columns=df.columns)
+        # Apply highlighting to the transposed dataframe (now rows are metrics, columns are models)
+        def highlight_scores_transposed(df_t):
+            # Create an empty DataFrame with the same shape
+            highlight_df = pd.DataFrame("", index=df_t.index, columns=df_t.columns)
             
-            # Define score columns (global_score and field scores)
-            score_columns = ["global_score"] + sorted_field_names
-            
-            for col in df.columns:
-                if col in score_columns:
-                    # Convert column to numeric, handling None/NaN values
-                    numeric_col = pd.to_numeric(df[col], errors='coerce')
+            # For each row (metric), find max and min across columns (models)
+            for metric_name in df_t.index:
+                row_values = pd.to_numeric(df_t.loc[metric_name], errors='coerce')
+                
+                if row_values.notna().any():
+                    max_val = row_values.max()
+                    min_val = row_values.min()
                     
-                    if numeric_col.notna().any():  # Only if there are valid numeric values
-                        max_val = numeric_col.max()
-                        min_val = numeric_col.min()
-                        
-                        # Highlight max in green, min in red
-                        for idx in df.index:
-                            val = numeric_col.loc[idx]
-                            if pd.notna(val):
-                                if val == max_val:
-                                    highlight_df.loc[idx, col] = "font-weight: bold; color: green"
-                                elif val == min_val:
-                                    highlight_df.loc[idx, col] = "font-weight: bold; color: red"
+                    # Highlight best and worst model for each metric
+                    for model_col in df_t.columns:
+                        val = row_values.loc[model_col]
+                        if pd.notna(val):
+                            if val == max_val:
+                                highlight_df.loc[metric_name, model_col] = "font-weight: bold; color: green"
+                            elif val == min_val:
+                                highlight_df.loc[metric_name, model_col] = "font-weight: bold; color: red"
             
             return highlight_df
         
+        st.write("**Score Table** - Shows metrics as rows and models as columns (transposed view)")
+        
+        # Format all numeric values to 3 decimal places
         st.dataframe(
-            df.style.apply(highlight_scores, axis=None).format(format_dict, na_rep="N/A"),
+            df_transposed.style.apply(highlight_scores_transposed, axis=None).format("{:.3f}", na_rep="N/A"),
             use_container_width=True,
-            hide_index=True,
-            column_config=column_config
+            hide_index=False
         )
         
-        # Show summary statistics
+        # Show summary statistics based on transposed data
         st.write("---")
         st.write("**Field Performance Summary**")
         
         summary_data = []
-        for field in sorted_field_names:
-            field_values = df[field].dropna()
-            if len(field_values) > 0:
-                summary_data.append({
-                    "Field": field.capitalize(),
-                    "Mean Score": f"{field_values.mean():.3f}",
-                    "Min Score": f"{field_values.min():.3f}",
-                    "Max Score": f"{field_values.max():.3f}",
-                    "Std Dev": f"{field_values.std():.3f}" if len(field_values) > 1 else "N/A"
-                })
+        for metric_name in df_transposed.index:
+            if metric_name in sorted_field_names or metric_name == "global_score":
+                metric_values = df_transposed.loc[metric_name].dropna()
+                if len(metric_values) > 0:
+                    summary_data.append({
+                        "Metric": metric_name.replace("_", " ").capitalize(),
+                        "Mean Score": f"{metric_values.mean():.3f}",
+                        "Min Score": f"{metric_values.min():.3f}",
+                        "Max Score": f"{metric_values.max():.3f}",
+                        "Std Dev": f"{metric_values.std():.3f}" if len(metric_values) > 1 else "N/A"
+                    })
         
         if summary_data:
             summary_df = pd.DataFrame(summary_data)
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
         
-        # Show error details if any
-        if df["errors"].sum() > 0:
+        # Show error details if any (using original df which still has errors column)
+        if "errors" in df.columns and df["errors"].sum() > 0:
             with st.expander(f"Error Details ({int(df['errors'].sum())} total errors)", expanded=False):
                 for experiment in experimentset.get("experiments", []):
                     model_name = experiment.get("model", {}).get("name", experiment.get("name", "Unknown"))
