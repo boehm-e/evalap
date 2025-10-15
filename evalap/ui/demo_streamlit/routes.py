@@ -49,6 +49,13 @@ ROUTES = [
         "description": "Ops analysis",
         "icon": ":material/settings:",
     },
+    {
+        "id": "label_studio",
+        "path": "views/label_studio_projects.py",
+        "title": "Label Studio",
+        "description": "Browse Label Studio annotation projects",
+        "icon": ":material/label:",
+    },
 ]
 
 
