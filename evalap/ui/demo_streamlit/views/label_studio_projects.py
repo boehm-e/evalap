@@ -5,6 +5,7 @@ import json
 import numpy as np
 from collections import defaultdict
 from typing import Optional
+from label_studio_sdk import Client
 
 # Check if label-studio-sdk is available
 try:

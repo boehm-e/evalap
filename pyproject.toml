@@ -34,7 +34,9 @@ dependencies = [
     "toml==0.10.2",
     # Front
     "streamlit==1.40.1",
-    "plotly==5.22.0"
+    "plotly==5.22.0",
+    # Label studio
+    "label-studio-sdk==2.0.12"
 ]
 
 
