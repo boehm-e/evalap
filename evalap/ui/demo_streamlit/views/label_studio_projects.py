@@ -7,12 +7,6 @@ from collections import defaultdict
 from typing import Optional
 from label_studio_sdk import Client
 
-# Check if label-studio-sdk is available
-try:
-    from label_studio_sdk import Client
-    LABEL_STUDIO_AVAILABLE = True
-except ImportError:
-    LABEL_STUDIO_AVAILABLE = False
 
 def display_structured_output_analysis(experimentset):
     """Display structured output analysis with fields as rows and models as columns, with pinned rows"""
@@ -290,12 +284,6 @@ def evaluate_ground_truth_vs_predictions(tasks):
 
 st.title("Label Studio Projects")
 st.markdown("Browse and manage your Label Studio annotation projects.")
-
-# Check if SDK is available
-if not LABEL_STUDIO_AVAILABLE:
-    st.error("❌ Label Studio SDK is not installed. Please install it using:")
-    st.code("pip install label-studio-sdk", language="bash")
-    st.stop()
 
 # Connection settings in expander
 with st.expander("⚙️ Connection Settings", expanded=False):
