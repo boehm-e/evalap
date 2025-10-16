@@ -185,7 +185,13 @@ def get_label_studio_client() -> Optional[Client]:
         return None
     
     try:
-        client = Client(url=url, api_key=api_key)
+        import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        session = requests.Session()
+        session.verify = False
+
+        client = Client(url=url, api_key=api_key, session=session)
         return client
     except Exception as e:
         st.error(f"Failed to connect to Label Studio: {str(e)}")
