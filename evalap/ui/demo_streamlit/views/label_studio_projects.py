@@ -7,9 +7,8 @@ from collections import defaultdict
 from typing import Optional
 from label_studio_sdk import Client
 
-
 def display_structured_output_analysis(experimentset):
-    """Display structured output analysis with fields as rows and models as columns, with pinned rows"""
+    """Display structured output analysis with fields as rows and models as columns, with pinned rows."""
     st.subheader("📝 Structured Output Analysis")
     
     # Collect data
@@ -118,7 +117,7 @@ def display_structured_output_analysis(experimentset):
             scrollable_df.style.apply(highlight_scores, axis=None).format(format_dict, na_rep="N/A"),
             use_container_width=True,
             column_config=column_config,
-            height=400  # Adjustable height for scrollable section
+            height=400
         )
     
     # Show summary statistics
@@ -170,13 +169,7 @@ def display_structured_output_analysis(experimentset):
                     st.dataframe(error_df, use_container_width=True, hide_index=True)
 
 def get_label_studio_client() -> Optional[Client]:
-    """
-    Create a Label Studio client using environment variables.
-    
-    Expected environment variables:
-    - LABEL_STUDIO_URL: The URL of your Label Studio instance
-    - LABEL_STUDIO_API_KEY: Your Label Studio API key
-    """
+    """Create a Label Studio client using environment variables."""
     url = os.getenv("LABEL_STUDIO_URL", "http://localhost:8080")
     api_key = os.getenv("LABEL_STUDIO_API_KEY")
     
@@ -190,7 +183,6 @@ def get_label_studio_client() -> Optional[Client]:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         session = requests.Session()
         session.verify = False
-
         client = Client(url=url, api_key=api_key, session=session)
         return client
     except Exception as e:
@@ -198,7 +190,7 @@ def get_label_studio_client() -> Optional[Client]:
         return None
 
 def extract_raw_api_response(results):
-    """Extract data from results where from_name is raw_api_response"""
+    """Extract data from results where from_name is raw_api_response."""
     for result in results:
         if result.get('from_name') == 'raw_api_response':
             try:
@@ -211,13 +203,14 @@ def extract_raw_api_response(results):
                     except json.JSONDecodeError:
                         return text
                 return text
-            except Exception as e:
+            except Exception:
                 return None
     return None
 
 def evaluate_ground_truth_vs_predictions(tasks):
     """
-    Evaluate ground truth vs predictions for all tasks in a project, grouped by model_version.
+    Evaluate ground truth vs predictions for tasks in a project, grouped by model_version.
+    Filters out tasks with no predictions and processes tasks with at least one prediction.
     Returns data structured for display_structured_output_analysis.
     """
     experimentset = {"experiments": []}
@@ -232,35 +225,45 @@ def evaluate_ground_truth_vs_predictions(tasks):
             if annotation.get('ground_truth'):
                 ground_truth = extract_raw_api_response(annotation.get('result', []))
                 if ground_truth is None:
-                    st.warning(f"Error parsing ground truth for task {task_id}")
+                    st.warning(f"Task {task_id}: Error parsing ground truth")
+                    continue  # Skip if ground truth is invalid
+        
+        # Skip tasks with no predictions
+        predictions = task.get('predictions', [])
+        if not predictions:
+            continue  # Skip tasks with zero predictions
         
         if ground_truth:
-            # Extract and evaluate predictions
-            for prediction in task.get('predictions', []):
+            # Process predictions for tasks with valid ground truth
+            for prediction in predictions:
                 model_version = prediction.get('model_version', 'Unknown')
                 pred_data = extract_raw_api_response(prediction.get('result', []))
                 
-                if pred_data:
-                    field_scores = {}
-                    errors = []
+                if pred_data is None:
+                    st.warning(f"Task {task_id}, Model {model_version}: Error parsing prediction")
+                    continue  # Skip invalid predictions
+                
+                field_scores = {}
+                errors = []
+                
+                # Compare fields between ground truth and prediction
+                for field in ground_truth.keys():
+                    gt_value = ground_truth.get(field)
+                    pred_value = pred_data.get(field)
                     
-                    # Compare fields
-                    for field in ground_truth.keys():
-                        gt_value = ground_truth.get(field)
-                        pred_value = pred_data.get(field)
-                        
-                        # Simple exact match scoring (1 for match, 0 for mismatch or None)
-                        if gt_value is not None and pred_value is not None:
-                            score = 1.0 if gt_value == pred_value else 0.0
-                            field_scores[field] = score
+                    # Only score fields where ground truth is not None
+                    if gt_value is not None:
+                        if pred_value is not None:
+                            # Exact match scoring (1 for match, 0 for mismatch)
+                            field_scores[field] = 1.0 if gt_value == pred_value else 0.0
                         else:
+                            # Missing field in prediction
                             field_scores[field] = 0.0
-                            if gt_value is not None:
-                                errors.append(f"Field {field} missing in prediction")
-                    
-                    # Calculate global score as average of field scores
+                            errors.append(f"Field {field} missing in prediction")
+                
+                # Only include observations if at least one field was scored
+                if field_scores:
                     global_score = np.mean(list(field_scores.values())) if field_scores else 0.0
-                    
                     observation = {
                         "score": global_score,
                         "field_scores": field_scores
@@ -274,17 +277,18 @@ def evaluate_ground_truth_vs_predictions(tasks):
                     }
                     model_to_observations[model_version].append(obs_entry)
     
-    # Create experiments for each model_version
+    # Create experiments for each model_version with observations
     for model_version, observations in model_to_observations.items():
-        experimentset["experiments"].append({
-            "id": model_version,
-            "name": model_version,
-            "model": {"name": model_version, "aliased_name": model_version},
-            "results": [{
-                "metric_name": "llm_structured_output",
-                "observation_table": observations
-            }]
-        })
+        if observations:  # Only include models with valid observations
+            experimentset["experiments"].append({
+                "id": model_version,
+                "name": model_version,
+                "model": {"name": model_version, "aliased_name": model_version},
+                "results": [{
+                    "metric_name": "llm_structured_output",
+                    "observation_table": observations
+                }]
+            })
     
     return experimentset
 
@@ -335,7 +339,6 @@ try:
     
     # If a project is selected, show its tasks and evaluation
     elif st.session_state.selected_project_id is not None:
-        # Find the selected project
         selected_project = next(
             (p for p in projects if p.get_params()['id'] == st.session_state.selected_project_id),
             None
@@ -356,7 +359,8 @@ try:
             if not tasks:
                 st.info("No tasks found in this project.")
             else:
-                st.success(f"Found {len(tasks)} task(s)")
+                tasks_with_predictions = [t for t in tasks if t.get('predictions', [])]
+                st.success(f"Found {len(tasks)} task(s), {len(tasks_with_predictions)} with predictions")
                 
                 # Perform evaluation
                 experimentset = evaluate_ground_truth_vs_predictions(tasks)
@@ -368,12 +372,10 @@ try:
                 # Display tasks
                 for idx, task in enumerate(tasks, 1):
                     with st.expander(f"Task {idx} - ID: {task['id']}", expanded=(idx == 1)):
-                        # Task data (input/ground truth)
                         st.subheader("📝 Task Data")
                         if task.get('data'):
                             st.json(task['data'])
                         
-                        # Annotations
                         st.subheader("✅ Annotations")
                         annotations = task.get('annotations', [])
                         
@@ -398,7 +400,6 @@ try:
                                         elif annotation.get('ground_truth'):
                                             st.success("⭐ Ground Truth")
                                     
-                                    # Annotation result
                                     if annotation.get('result'):
                                         if st.button(f"Toggle Result #{ann_idx}", key=f"toggle_result_{task['id']}_{ann_idx}"):
                                             toggle_key = f"show_result_{task['id']}_{ann_idx}"
@@ -409,7 +410,6 @@ try:
                                     
                                     st.markdown("---")
                         
-                        # Predictions
                         predictions = task.get('predictions', [])
                         if predictions:
                             st.subheader("🤖 Predictions")
@@ -424,7 +424,6 @@ try:
                         st.divider()
     
     else:
-        # Display projects list
         st.success(f"Found {len(projects)} project(s)")
         
         for project in projects:
@@ -433,20 +432,16 @@ try:
                 
                 with col1:
                     st.subheader(f"📊 {project.get_params()['title']}")
-                    
-                    # Project details
                     params = project.get_params()
                     st.markdown(f"**ID:** {params['id']}")
                     
                     if params.get('description'):
                         st.markdown(f"**Description:** {params['description']}")
                     
-                    # Task statistics
                     st.markdown(f"**Total Tasks:** {params.get('task_number', 0)}")
                     st.markdown(f"**Created:** {params.get('created_at', 'N/A')}")
                 
                 with col2:
-                    # Action buttons
                     if st.button(f"View Tasks", key=f"view_tasks_{params['id']}"):
                         st.session_state.selected_project_id = params['id']
                         st.rerun()
@@ -455,7 +450,6 @@ try:
                         st.session_state[f"show_details_{params['id']}"] = not st.session_state.get(f"show_details_{params['id']}", False)
                         st.rerun()
                 
-                # Show detailed information if requested
                 if st.session_state.get(f"show_details_{params['id']}", False):
                     with st.expander(f"Project Details", expanded=True):
                         st.json(params)
